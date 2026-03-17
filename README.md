@@ -1,6 +1,6 @@
 # tag-pastas-sharepoint
 
-Projeto Python para gravar o **CNPJ de empresas como metadado oculto** nas pastas de uma biblioteca do SharePoint, sem alterar o nome das pastas.
+Python script that writes CNPJs as metadata to SharePoint library folders from an Excel file, using Azure AD authentication.
 
 ---
 
@@ -50,15 +50,19 @@ O app precisa ter as seguintes **Application Permissions** concedidas (não dele
 
 ### Instalação
 ```bash
-pip install Office365-REST-Python-Client pandas openpyxl python-dotenv
+pip install -r requirements.txt
 ```
 
 ### Arquivo `.env`
-Crie um arquivo `.env` na raiz do projeto (baseado no `.env.example`):
+Crie um arquivo `.env` na raiz do projeto baseado no `.env.example`:
 ```
 TENANT_ID=seu-tenant-id
 CLIENT_ID=seu-client-id
 CLIENT_SECRET=seu-client-secret
+SITE_URL=https://seu-tenant.sharepoint.com/sites/seu-site
+LIBRARY=Documentos
+PASTA_URL=/sites/seu-site/Documentos Compartilhados/Nome da Pasta
+EXCEL_PATH=C:\caminho\para\planilha.xlsx
 ```
 
 ---
@@ -67,8 +71,9 @@ CLIENT_SECRET=seu-client-secret
 
 ```
 tag-pastas-sharepoint/
-├── .env                          # credenciais (não versionar)
+├── .env                          # credenciais e configurações (não versionar)
 ├── .env.example                  # template do .env
+├── requirements.txt              # dependências do projeto
 ├── listar_bibliotecas.py         # utilitário: lista todas as bibliotecas do site
 ├── teste_gravar_cnpj.py          # teste pontual com uma única pasta
 ├── ler_cnpj.py                   # lê e confirma o CNPJ gravado em uma pasta
@@ -91,23 +96,22 @@ python listar_bibliotecas.py
 ---
 
 ### `teste_gravar_cnpj.py`
-Teste pontual que grava o CNPJ em **uma única pasta** hardcoded.
+Teste pontual que grava o CNPJ em **uma única pasta** definida via `.env` (`PASTA_URL`).
 Usado para validar a autenticação, a criação da coluna e a gravação antes de rodar em massa.
 
 ```bash
 python teste_gravar_cnpj.py
 ```
 
-Configurações no topo do arquivo:
-```python
-PASTA_TESTE = "31 - RESIDENCIAL MODELO"
-CNPJ_TESTE  = "12345678901234"
+Ajuste no `.env` antes de rodar:
+```
+PASTA_URL=/sites/seu-site/Documentos Compartilhados/Nome da Pasta
 ```
 
 ---
 
 ### `ler_cnpj.py`
-Lê e exibe o CNPJ gravado em uma pasta específica.
+Lê e exibe o CNPJ gravado em uma pasta específica (definida via `PASTA_URL` no `.env`).
 Confirma que o metadado foi persistido corretamente.
 
 ```bash
@@ -116,7 +120,7 @@ python ler_cnpj.py
 
 Output esperado:
 ```
-Pasta : 31 - RESIDENCIAL MODELO
+Pasta : Nome da Pasta
 CNPJ  : 12345678901234
 ```
 
@@ -146,8 +150,8 @@ python gravar_cnpj_sharepoint.py
 
 | Pasta de arquivos | CNPJ |
 |---|---|
-| 31 - RESIDENCIAL MODELO | 01234567891234 |
-| 32 - OUTRA EMPRESA LTDA | 98765432000111 |
+| EMPRESA ALPHA LTDA | 01234567891234 |
+| EMPRESA BETA S.A | 98765432000111 |
 
 > ⚠️ A coluna `CNPJ` no Excel deve estar formatada como **Texto** para preservar zeros à esquerda. O script aplica `dtype=str` na leitura e `zfill(14)` como proteção adicional.
 
