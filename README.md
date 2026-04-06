@@ -1,6 +1,6 @@
 # tag-pastas-sharepoint
 
-Python script that writes CNPJs as metadata to SharePoint library folders from an Excel file, using Azure AD authentication.
+Python script que grava CNPJs como metadado oculto em pastas de uma biblioteca do SharePoint, usando autenticação via Azure AD e mapeamento por planilha Excel.
 
 ---
 
@@ -12,19 +12,19 @@ O objetivo deste projeto é associar o CNPJ de cada empresa à sua respectiva pa
 
 ---
 
-## O que foi feito
+## Como funciona
 
 ### 1. Campo customizado oculto
-Via SharePoint REST API, foi adicionada uma coluna do tipo `Text` na biblioteca com os atributos `Hidden="TRUE"` e `ShowInViewForms="FALSE"` — o campo existe no schema da lista mas é **invisível na UI** para os usuários.
+Via SharePoint REST API, é adicionada uma coluna do tipo `Text` na biblioteca com os atributos `Hidden="TRUE"` e `ShowInViewForms="FALSE"` — o campo existe no schema da lista mas é **invisível na UI** para os usuários.
 
-### 2. Navegação por path (evitando List View Threshold)
-Em vez de fazer um `$filter` na lista inteira (que bate no limite de 5.000 itens do SharePoint), navegamos diretamente pelo **server-relative URL** de cada pasta com `get_folder_by_server_relative_url`. Isso retorna o `list_item_all_fields` da pasta, de onde extraímos o `Id` do item sem disparar o throttle.
+### 2. Busca de pastas via REST + FileDirRef
+Para buscar apenas as pastas do **1º nível** sem varrer toda a biblioteca, usamos a REST API com `$select=FileLeafRef,CNPJ,FSObjType,FileDirRef` e filtramos em Python por `FileDirRef == root_url`. Isso evita o List View Threshold e não traz subpastas.
 
 ### 3. Gravação do metadado
-Com o `Id` em mãos, acessamos o item via `get_item_by_id`, setamos o valor do campo `CNPJ` e executamos o `update()` — que dispara um `PATCH` na REST API do SharePoint.
+Com o `ID` do item em mãos, acessamos via `get_item_by_id`, setamos o valor do campo `CNPJ` e executamos o `update()` — que dispara um `PATCH` na REST API do SharePoint.
 
 ### 4. Leitura
-Campos customizados não vêm no payload padrão. A leitura exige um `select` explícito:
+Campos customizados `Hidden=TRUE` não vêm no payload padrão. A leitura exige um `select` explícito:
 ```python
 ctx.load(item, ["CNPJ"])  # gera $select=CNPJ na query da API
 ```
@@ -36,7 +36,7 @@ ctx.load(item, ["CNPJ"])  # gera $select=CNPJ na query da API
 | Biblioteca | Uso |
 |---|---|
 | `Office365-REST-Python-Client` | Wrapper Python para a SharePoint REST API |
-| `pandas` + `openpyxl` | Leitura do Excel com tipagem forçada (`dtype=str`) para preservar zeros à esquerda em CNPJs |
+| `pandas` + `openpyxl` | Leitura do Excel com `dtype=str` para preservar zeros à esquerda em CNPJs |
 | `python-dotenv` | Credenciais via `.env` (autenticação app-only com `ClientId` + `ClientSecret` no Azure AD) |
 
 ---
@@ -71,51 +71,113 @@ EXCEL_PATH=C:\caminho\para\planilha.xlsx
 
 ```
 tag-pastas-sharepoint/
-├── .env                          # credenciais e configurações (não versionar)
-├── .env.example                  # template do .env
-├── requirements.txt              # dependências do projeto
-├── listar_bibliotecas.py         # utilitário: lista todas as bibliotecas do site
-├── teste_gravar_cnpj.py          # teste pontual com uma única pasta
-├── ler_cnpj.py                   # lê e confirma o CNPJ gravado em uma pasta
-├── inspecionar_pasta.py          # inspeciona todos os metadados de uma pasta
-└── gravar_cnpj_sharepoint.py     # script principal: processa todas as pastas via Excel
+│
+├── src/                              # Módulos reutilizáveis (lógica de negócio)
+│   ├── config.py                     # Variáveis de ambiente e constantes
+│   ├── excel.py                      # Leitura do Excel: normalizar, limpar_cnpj, carregar_excel
+│   └── sharepoint.py                 # API SharePoint: conectar, garantir_coluna, listar_cnpjs, gravar_cnpjs
+│
+├── scripts/                          # Entry points — execução do dia a dia
+│   ├── gravar_cnpjs.py               # Grava CNPJs em todas as pastas do 1º nível
+│   ├── listar_cnpjs.py               # Consulta e exibe CNPJs como DataFrame
+│   └── listar_bibliotecas_sp.py      # Utilitário: lista todas as bibliotecas do site
+│
+├── tools/                            # Scripts de debug e validação pontual
+│   ├── gravar_cnpj_pasta.py          # Grava CNPJ em uma única pasta (PASTA_URL no .env)
+│   ├── ler_cnpj_pasta.py             # Lê o CNPJ gravado em uma pasta específica
+│   └── inspecionar_pasta_sp.py       # Exibe todos os metadados de uma pasta
+│
+├── .env                              # Credenciais e configurações (não versionar)
+├── .env.example                      # Template do .env
+├── requirements.txt                  # Dependências do projeto
+└── README.md
 ```
+
+**Convenção de nomenclatura:** `<verbo>_<objeto>_<contexto>.py` em snake_case.
+- `src/` — nunca executado diretamente, apenas importado
+- `scripts/` — execução em produção/dia a dia
+- `tools/` — apenas para debug e validação pontual
 
 ---
 
 ## Scripts
 
-### `listar_bibliotecas.py`
+### `scripts/gravar_cnpjs.py`
+Script principal. Lê o Excel de mapeamento e grava o CNPJ em todas as pastas do 1º nível da biblioteca.
+
+```bash
+# Todas as pastas
+python scripts/gravar_cnpjs.py
+
+# Testar com N pastas antes de rodar em massa
+python scripts/gravar_cnpjs.py --limite 5
+```
+
+**Excel esperado:**
+
+| Pasta de arquivos | CNPJ |
+|---|---|
+| EMPRESA ALPHA LTDA | 01234567891234 |
+| EMPRESA BETA S.A | 98765432000111 |
+
+Output ao final:
+```
+CNPJs gravados : 45
+Sem mapeamento : 3
+
+Pastas sem CNPJ no Excel:
+  - 2025
+  - 2026
+  - Modelos
+```
+
+---
+
+### `scripts/listar_cnpjs.py`
+Consulta e exibe os CNPJs gravados em todas as pastas do 1º nível como DataFrame.
+
+```bash
+python scripts/listar_cnpjs.py
+```
+
+Output esperado:
+```
+                        Pasta            CNPJ
+     EMPRESA ALPHA LTDA       01234567891234
+     EMPRESA BETA S.A         98765432000111
+
+Total        : 47 pastas
+Com CNPJ     : 45
+Sem CNPJ     : 2
+```
+
+---
+
+### `scripts/listar_bibliotecas_sp.py`
 Lista todas as listas e bibliotecas disponíveis no site SharePoint.
 Útil para descobrir o **nome exato da biblioteca** antes de rodar os outros scripts.
 
 ```bash
-python listar_bibliotecas.py
+python scripts/listar_bibliotecas_sp.py
 ```
 
 ---
 
-### `teste_gravar_cnpj.py`
-Teste pontual que grava o CNPJ em **uma única pasta** definida via `.env` (`PASTA_URL`).
-Usado para validar a autenticação, a criação da coluna e a gravação antes de rodar em massa.
+### `tools/gravar_cnpj_pasta.py`
+Grava um CNPJ de teste em **uma única pasta** definida via `PASTA_URL` no `.env`.
+Usado para validar autenticação, criação da coluna e gravação antes de rodar em massa.
 
 ```bash
-python teste_gravar_cnpj.py
-```
-
-Ajuste no `.env` antes de rodar:
-```
-PASTA_URL=/sites/seu-site/Documentos Compartilhados/Nome da Pasta
+python tools/gravar_cnpj_pasta.py
 ```
 
 ---
 
-### `ler_cnpj.py`
-Lê e exibe o CNPJ gravado em uma pasta específica (definida via `PASTA_URL` no `.env`).
-Confirma que o metadado foi persistido corretamente.
+### `tools/ler_cnpj_pasta.py`
+Lê e exibe o CNPJ gravado em uma pasta específica (`PASTA_URL` no `.env`).
 
 ```bash
-python ler_cnpj.py
+python tools/ler_cnpj_pasta.py
 ```
 
 Output esperado:
@@ -126,45 +188,15 @@ CNPJ  : 12345678901234
 
 ---
 
-### `inspecionar_pasta.py`
+### `tools/inspecionar_pasta_sp.py`
 Exibe **todos os metadados** de uma pasta (campos nativos e customizados).
 Útil para debug e para entender o schema completo do item.
 
 ```bash
-python inspecionar_pasta.py
+python tools/inspecionar_pasta_sp.py
 ```
 
-> **Nota:** campos customizados não aparecem no `list_item_all_fields` padrão.
-> O script faz uma segunda chamada com `select` explícito para garantir a leitura do campo `CNPJ`.
-
----
-
-### `gravar_cnpj_sharepoint.py`
-Script principal. Lê o Excel de mapeamento e grava o CNPJ em todas as pastas da biblioteca.
-
-```bash
-python gravar_cnpj_sharepoint.py
-```
-
-**Excel esperado:**
-
-| Pasta de arquivos | CNPJ |
-|---|---|
-| EMPRESA ALPHA LTDA | 01234567891234 |
-| EMPRESA BETA S.A | 98765432000111 |
-
-> ⚠️ A coluna `CNPJ` no Excel deve estar formatada como **Texto** para preservar zeros à esquerda. O script aplica `dtype=str` na leitura e `zfill(14)` como proteção adicional.
-
-Output ao final:
-```
-✅ CNPJs gravados : 45
-⚠️  Sem mapeamento: 3
-
-Pastas sem CNPJ no Excel:
-  - 2025
-  - 2026
-  - Modelos
-```
+> **Nota:** campos `Hidden=TRUE` não aparecem no payload padrão. O script faz uma segunda chamada com `select` explícito para garantir a leitura do campo `CNPJ`.
 
 ---
 
@@ -172,5 +204,5 @@ Pastas sem CNPJ no Excel:
 
 - A coluna `CNPJ` é criada automaticamente na primeira execução, caso não exista.
 - O script é **idempotente** — rodar mais de uma vez sobrescreve o valor sem criar duplicatas.
-- Subpastas (como `2025`, `2026`) não terão CNPJ mapeado — isso é esperado.
-- CNPJs com zero à esquerda (ex: `01234567891234`) são preservados corretamente via `zfill(14)`.
+- Apenas pastas do **1º nível** são processadas. Subpastas (como `2025`, `2026`) são ignoradas — isso é esperado.
+- CNPJs com zero à esquerda (ex: `01234567891234`) são preservados via `zfill(14)`.
